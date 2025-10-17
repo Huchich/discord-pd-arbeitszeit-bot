@@ -1,94 +1,113 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+// === MODULE ===
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
 
-// Client erstellen (Bot-Objekt)
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+// === ENVIRONMENT VARIABLES ===
+const TOKEN = process.env.TOKEN;         // Discord Bot Token
+const CLIENT_ID = process.env.CLIENT_ID; // Bot Application ID
 
+// === ZEITEN DATEI ===
 const zeitenDatei = './zeiten.json';
+if (!fs.existsSync(zeitenDatei)) fs.writeFileSync(zeitenDatei, JSON.stringify({}));
+let zeiten = JSON.parse(fs.readFileSync(zeitenDatei, 'utf8'));
 
-// Wenn Datei nicht existiert, erstellen
-if (!fs.existsSync(zeitenDatei)) {
-  fs.writeFileSync(zeitenDatei, JSON.stringify({}));
-}
+// === CLIENT ===
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Stempel-Daten laden
-let zeiten = JSON.parse(fs.readFileSync(zeitenDatei));
+// === SLASH COMMANDS AUTOMATISCH REGISTRIEREN ===
+const commands = [
+  new SlashCommandBuilder().setName('ein').setDescription('Einstempeln – Beginn deiner Dienstzeit'),
+  new SlashCommandBuilder().setName('aus').setDescription('Ausstempeln – Ende deiner Dienstzeit'),
+  new SlashCommandBuilder().setName('status').setDescription('Zeigt deine aktuelle Dienstzeit an'),
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Zeigt das Dienstzeit-Leaderboard an'),
+].map(cmd => cmd.toJSON());
 
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+(async () => {
+  try {
+    console.log('📡 Slash-Commands werden registriert...');
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log('✅ Slash-Commands erfolgreich registriert!');
+  } catch (error) {
+    console.error(error);
+  }
+})();
+
+// === READY EVENT ===
 client.once('ready', () => {
   console.log(`✅ Eingeloggt als ${client.user.tag}`);
 });
 
-// Nachrichten auswerten
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
+// === INTERACTION HANDLER ===
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  const userId = message.author.id;
-  const username = message.author.username;
-  const content = message.content.toLowerCase();
+  const { commandName, user } = interaction;
 
   // 🔹 EINSTEMPELN
-  if (content === '!ein') {
-    if (zeiten[userId]?.eingestempelt) {
-      return message.reply('⛔ Du bist bereits eingestempelt.');
+  if (commandName === 'ein') {
+    if (zeiten[user.id]?.eingestempelt) {
+      return interaction.reply({ content: '⛔ Du bist bereits eingestempelt.', ephemeral: true });
     }
 
-    zeiten[userId] = {
-      name: username,
+    zeiten[user.id] = {
+      name: user.username,
       einstempel: Date.now(),
-      ausgestempelt: false,
+      gesamtzeit: zeiten[user.id]?.gesamtzeit || 0,
+      eingestempelt: true,
     };
     fs.writeFileSync(zeitenDatei, JSON.stringify(zeiten, null, 2));
-    return message.reply(`🕒 ${username}, du hast dich **eingestempelt**.`);
+    return interaction.reply(`🕒 ${user.username}, du bist jetzt **im Dienst**.`);
   }
 
   // 🔹 AUSSTEMPELN
-  if (content === '!aus') {
-    if (!zeiten[userId]?.einstempel || zeiten[userId].ausgestempelt) {
-      return message.reply('⛔ Du bist aktuell **nicht eingestempelt**.');
+  if (commandName === 'aus') {
+    if (!zeiten[user.id]?.eingestempelt) {
+      return interaction.reply({ content: '⛔ Du bist aktuell **nicht eingestempelt**.', ephemeral: true });
     }
 
-    const diff = Date.now() - zeiten[userId].einstempel;
+    const diff = Date.now() - zeiten[user.id].einstempel;
     const minuten = Math.floor(diff / 60000);
 
-    zeiten[userId].ausgestempelt = true;
-    zeiten[userId].arbeitszeit = minuten;
+    zeiten[user.id].gesamtzeit += minuten;
+    zeiten[user.id].eingestempelt = false;
     fs.writeFileSync(zeitenDatei, JSON.stringify(zeiten, null, 2));
 
-    return message.reply(
-      `✅ ${username}, du hast dich **ausgestempelt**.\n🕒 Arbeitszeit: **${minuten} Minuten**.`
-    );
+    return interaction.reply(`✅ ${user.username}, du hast dich **ausgestempelt**.\n🕒 Arbeitszeit: **${minuten} Minuten**.`);
   }
 
   // 🔹 STATUS
-  if (content === '!status') {
-    const data = zeiten[userId];
-    if (!data || data.ausgestempelt)
-      return message.reply('ℹ️ Du bist **nicht eingestempelt**.');
+  if (commandName === 'status') {
+    const data = zeiten[user.id];
+    if (!data) return interaction.reply('ℹ️ Du hast noch keine erfasste Dienstzeit.');
 
-    const diff = Math.floor((Date.now() - data.einstempel) / 60000);
-    return message.reply(`👮 Du bist seit **${diff} Minuten** im Dienst.`);
+    const aktuell = data.eingestempelt ? Math.floor((Date.now() - data.einstempel) / 60000) : 0;
+    const gesamt = (data.gesamtzeit + aktuell).toLocaleString('de-DE');
+
+    return interaction.reply(`👮 ${user.username}, du hast insgesamt **${gesamt} Minuten** Dienstzeit.`);
   }
 
-  // 🔹 ADMIN-BEFEHL: Gesamtübersicht
-  if (content === '!liste' && message.member.permissions.has('Administrator')) {
-    let antwort = '📋 **Aktuelle Arbeitszeiten:**\n';
-    for (const id in zeiten) {
-      const user = zeiten[id];
-      const zeit = user.arbeitszeit
-        ? `${user.arbeitszeit} Min`
-        : user.ausgestempelt
-        ? 'ausgestempelt'
-        : 'eingestempelt';
-      antwort += `👤 ${user.name}: ${zeit}\n`;
-    }
-    return message.reply(antwort);
+  // 🔹 LEADERBOARD
+  if (commandName === 'leaderboard') {
+    const sortiert = Object.values(zeiten)
+      .sort((a, b) => b.gesamtzeit - a.gesamtzeit)
+      .slice(0, 10);
+
+    if (sortiert.length === 0) return interaction.reply('🏆 Noch keine Daten im Leaderboard.');
+
+    const embed = new EmbedBuilder()
+      .setTitle('🏆 Polizei-Leaderboard')
+      .setColor('#007bff')
+      .setDescription(
+        sortiert.map((p, i) => `**${i + 1}.** ${p.name} — ${p.gesamtzeit.toLocaleString('de-DE')} Min`).join('\n')
+      )
+      .setFooter({ text: 'Dienstzeit insgesamt' });
+
+    return interaction.reply({ embeds: [embed] });
   }
 });
 
-client.login(process.env.TOKEN);
+// === LOGIN ===
+client.login(TOKEN);
+
