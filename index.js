@@ -5,6 +5,7 @@ const fs = require('fs');
 // === ENVIRONMENT VARIABLES ===
 const TOKEN = process.env.TOKEN;         // Discord Bot Token
 const CLIENT_ID = process.env.CLIENT_ID; // Bot Application ID
+const ROLLENNAME = 'Im Dienst';          // Name der Rolle, die vergeben wird
 
 // === ZEITEN DATEI ===
 const zeitenDatei = './zeiten.json';
@@ -43,12 +44,18 @@ client.once('ready', () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const { commandName, user } = interaction;
+  const { commandName, user, member } = interaction;
 
   // 🔹 EINSTEMPELN
   if (commandName === 'ein') {
     if (zeiten[user.id]?.eingestempelt) {
       return interaction.reply({ content: '⛔ Du bist bereits eingestempelt.', ephemeral: true });
+    }
+
+    // Rolle vergeben
+    const rolle = interaction.guild.roles.cache.find(r => r.name === ROLLENNAME);
+    if (rolle) {
+      await member.roles.add(rolle).catch(err => console.error('Rolle konnte nicht vergeben werden:', err));
     }
 
     zeiten[user.id] = {
@@ -69,6 +76,12 @@ client.on('interactionCreate', async (interaction) => {
 
     const diff = Date.now() - zeiten[user.id].einstempel;
     const minuten = Math.floor(diff / 60000);
+
+    // Rolle entfernen
+    const rolle = interaction.guild.roles.cache.find(r => r.name === ROLLENNAME);
+    if (rolle) {
+      await member.roles.remove(rolle).catch(err => console.error('Rolle konnte nicht entfernt werden:', err));
+    }
 
     zeiten[user.id].gesamtzeit += minuten;
     zeiten[user.id].eingestempelt = false;
